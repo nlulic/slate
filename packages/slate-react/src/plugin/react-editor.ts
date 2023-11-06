@@ -849,8 +849,78 @@ export const ReactEditor: ReactEditorInterface = {
             firstRange.startContainer instanceof HTMLTableRowElement &&
             lastRange.startContainer instanceof HTMLTableRowElement
           ) {
-            // HTMLElement, becouse Element is a slate element
-            function getLastChildren(element: HTMLElement): HTMLElement {
+            let minOffset = Infinity
+            let maxOffset = 0
+            // create an array of rows which are part of the selection
+            const tableRows = []
+            let current: HTMLTableRowElement | null = null
+            for (let i = 0; i < domRange.rangeCount; i++) {
+              const { startContainer, startOffset } = domRange.getRangeAt(i)
+
+              let colspanOffset = 0
+              for (let j = 0; j < startOffset; j++) {
+                const element = startContainer.childNodes[j] as HTMLElement
+
+                const colspanAttr = element.getAttribute('colspan') ?? '1'
+                const colspan = parseInt(colspanAttr, 10) || 1
+
+                colspanOffset += colspan - 1
+              }
+
+              minOffset = Math.min(minOffset, startOffset + colspanOffset)
+              maxOffset = Math.max(maxOffset, startOffset + colspanOffset)
+
+              if (current === startContainer) {
+                continue
+              }
+
+              current = <HTMLTableRowElement>startContainer
+              tableRows.push(current)
+            }
+
+            // COMPAT: When dealing with Firefox ranges in a contenteditable table and rowspan attributes,
+            // it's challenging to determine the anchor and focus nodes. To address this, we create a matrix
+            // of selected table row elements and extend rowspan elements to the subsequent rows.
+            // This matrix helps us identify the start and end of the selection, ensuring that
+            // elements with rowspan attributes are included in the range selection.
+            // https://github.com/ianstormtaylor/slate/issues/5551
+            const matrix: HTMLTableCellElement[][] = []
+            for (let x = 0; x < tableRows.length; x++) {
+              let offset = 0
+              for (let y = 0; y < tableRows[x].children.length; y++) {
+                const element = tableRows[x].children[y] as HTMLTableCellElement
+                const colspanAttr = element.getAttribute('colspan') ?? '1'
+                const rowspanAttr = element.getAttribute('rowspan') ?? '1'
+                const colspan = parseInt(colspanAttr, 10) || 1
+                const rowspan = parseInt(rowspanAttr, 10) || 1
+
+                if (!matrix[x]) {
+                  matrix[x] = []
+                }
+
+                for (let c = 0, occupied = 0; c < colspan + occupied; c++) {
+                  if (matrix[x][y + c + offset]) {
+                    occupied++
+                    continue
+                  }
+
+                  for (let r = 0; r < rowspan; r++) {
+                    if (!matrix[x + r]) {
+                      matrix[x + r] = []
+                    }
+
+                    matrix[x + r][y + c + offset] = element
+                  }
+                }
+
+                offset += colspan - 1
+              }
+            }
+
+            // HTMLElement, because Element is a slate element
+            function getLastChildren<T extends HTMLElement>(
+              element: T
+            ): HTMLElement {
               if (element.childElementCount > 0) {
                 return getLastChildren(<HTMLElement>element.children[0])
               } else {
@@ -858,15 +928,12 @@ export const ReactEditor: ReactEditorInterface = {
               }
             }
 
-            const firstNodeRow = <HTMLTableRowElement>firstRange.startContainer
-            const lastNodeRow = <HTMLTableRowElement>lastRange.startContainer
-
             // This should never fail as "The HTMLElement interface represents any HTML element."
-            const firstNode = getLastChildren(
-              <HTMLElement>firstNodeRow.children[firstRange.startOffset]
-            )
+            const firstNode = getLastChildren(matrix[0][minOffset])
             const lastNode = getLastChildren(
-              <HTMLElement>lastNodeRow.children[lastRange.startOffset]
+              // tableRows instead of matrix because the rowspan can span outside of a selection
+              // making the matrix larger than the selected rows
+              matrix[tableRows.length - 1][maxOffset]
             )
 
             // Zero, as we allways take the right one as the anchor point
